@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Scientific Spectrogram</title>
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      background: black;
+      overflow: hidden;
+    }
+    #spectrogram {
+      display: block;
+      position: absolute;
+      top: 0; left: 60px;
+      right: 0; bottom: 0;
+    }
+    #metadata {
+      position: absolute;
+      top: 10px;
+      left: 10px;
+      color: white;
+      font-family: monospace;
+      background: rgba(0,0,0,0.6);
+      padding: 10px;
+      border-radius: 8px;
+      z-index: 10;
+      width: 300px;
+    }
+    canvas#axis {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 60px;
+      height: 100%;
+      z-index: 5;
+    }
+  </style>
+</head>
+<body>
+
+<canvas id="axis"></canvas>
+<canvas id="spectrogram"></canvas>
+
+<div id="metadata">
+  <div id="time">Time: 0.00s</div>
+  <div id="rms">RMS: - dBFS</div>
+  <div id="peak">Peak: - dBFS</div>
+  <div id="centroid">Spectral Centroid: - Hz</div>
+  <div id="dominant">Dominant Freq: - Hz</div>
+  <div id="params">FFT Size: - | Sample Rate: - Hz</div>
+</div>
+
+<script>
+  const canvas = document.getElementById("spectrogram");
+  const axisCanvas = document.getElementById("axis");
+  const ctx = canvas.getContext("2d");
+  const axisCtx = axisCanvas.getContext("2d");
+
+  function resize() {
+    canvas.width = window.innerWidth - 60;
+    canvas.height = window.innerHeight;
+    axisCanvas.height = window.innerHeight;
+    drawAxis();
+  }
+
+  window.addEventListener("resize", resize);
+  resize();
+
+  const fftSize = 2048;
+  const bufferLength = fftSize / 2;
+  const spectrogramData = new Uint8Array(bufferLength);
+
+  async function start() {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    const sampleRate = audioCtx.sampleRate;
+    const source = audioCtx.createMediaStreamSource(stream);
+    const analyser = audioCtx.createAnalyser();
+    analyser.fftSize = fftSize;
+    source.connect(analyser);
+
+    function draw() {
+      analyser.getByteFrequencyData(spectrogramData);
+
+      // Shift canvas left by 1px
+      const imageData = ctx.getImageData(1, 0, canvas.width - 1, canvas.height);
+      ctx.putImageData(imageData, 0, 0);
+
+      // Draw new vertical line of frequencies
+      for (let i = 0; i < bufferLength; i++) {
+        const value = spectrogramData[i];
+        const percent = value / 255;
+        const y = canvas.height - (i / bufferLength) * canvas.height;
+        const hue = Math.round(255 * percent);
+        ctx.fillStyle = `hsl(${hue}, 100%, ${percent * 50 + 25}%)`;
+        ctx.fillRect(canvas.width - 1, y, 1, canvas.height / bufferLength);
+      }
+
+      // === Metadata Calculations ===
+      let rms = 0;
+      let peak = 0;
+      let weightedSum = 0;
+      let magnitudeSum = 0;
+      let maxVal = 0, maxIndex = 0;
+
+      for (let i = 0; i < bufferLength; i++) {
+        const mag = spectrogramData[i] / 255;
+        rms += mag * mag;
+        if (mag > peak) peak = mag;
+
+        const freq = i * sampleRate / fftSize;
+        weightedSum += mag * freq;
+        magnitudeSum += mag;
+
+        if (spectrogramData[i] > maxVal) {
+          maxVal = spectrogramData[i];
+          maxIndex = i;
+        }
+      }
+
+      rms = Math.sqrt(rms / bufferLength);
+      const rmsDb = 20 * Math.log10(rms || 1e-8);
+      const peakDb = 20 * Math.log10(peak || 1e-8);
+      const centroid = weightedSum / magnitudeSum || 0;
+      const dominantFreq = maxIndex * sampleRate / fftSize;
+
+      // === Update Metadata UI ===
+      document.getElementById('time').textContent = `Time: ${audioCtx.currentTime.toFixed(2)}s`;
+      document.getElementById('rms').textContent = `RMS: ${rmsDb.toFixed(1)} dBFS`;
+      document.getElementById('peak').textContent = `Peak: ${peakDb.toFixed(1)} dBFS`;
+      document.getElementById('centroid').textContent = `Spectral Centroid: ${centroid.toFixed(0)} Hz`;
+      document.getElementById('dominant').textContent = `Dominant Freq: ${dominantFreq.toFixed(0)} Hz`;
+      document.getElementById('params').textContent = `FFT Size: ${fftSize} | Sample Rate: ${sampleRate} Hz`;
+
+      requestAnimationFrame(draw);
+    }
+
+    draw();
+  }
+
+  // Draw frequency axis on side canvas
+  function drawAxis() {
+    const height = axisCanvas.height;
+    const nyquist = 22050;
+    const divisions = 8;
+    axisCtx.clearRect(0, 0, 60, height);
+    axisCtx.fillStyle = "white";
+    axisCtx.font = "10px monospace";
+    axisCtx.textAlign = "right";
+
+    for (let i = 0; i <= divisions; i++) {
+      const y = height - (i / divisions) * height;
+      const freq = (i / divisions) * (nyquist);
+      axisCtx.fillText(`${freq.toFixed(0)} Hz`, 58, y + 3);
+      axisCtx.strokeStyle = "gray";
+      axisCtx.beginPath();
+      axisCtx.moveTo(59, y);
+      axisCtx.lineTo(60, y);
+      axisCtx.stroke();
+    }
+  }
+
+  start().catch(err => {
+    alert("Microphone access denied or not supported.");
+    console.error(err);
+  });
+</script>
+
+</body>
+</html>
